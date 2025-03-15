@@ -309,6 +309,22 @@ namespace pigo {
             while (d < end && (*d++ != '\n')) { }
     }
 
+    inline
+    void FileReader::skip_space_tab() {
+        while (d < end && (*d == ' ' || *d == '\t'))
+            ++d;
+    }
+
+    inline
+    std::string FileReader::read_word() {
+        std::string res;
+        while (d < end && (*d != ' ' && *d != '\t' && *d != '\r' && *d != '\n')) {
+            res += *d;
+            ++d;
+        }
+        return res;
+    }
+
     template<typename T>
     inline
     T FileReader::read_int() {
@@ -622,6 +638,13 @@ namespace pigo {
         }
 
         return t;
+    }
+
+    inline
+    bool FileReader::read(std::string s) {
+        bool comp = at_str(s);
+        if ( comp ) d += s.size();
+        return comp;
     }
 
     inline

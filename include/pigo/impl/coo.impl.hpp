@@ -6,10 +6,11 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#include <algorithm>
 #include <atomic>
 #include <vector>
 #include <type_traits>
-
+#include <iostream>
 namespace pigo {
 
     template<class L, class O, class S, bool sym, bool ut, bool sl, bool wgt, class W, class WS>
@@ -325,12 +326,36 @@ namespace pigo {
 
     template<class L, class O, class S, bool sym, bool ut, bool sl, bool wgt, class W, class WS>
     void COO<L,O,S,sym,ut,sl,wgt,W,WS>::read_mm_(FileReader& r) {
-        // Matrix market is ready similar to edge lists, however first the
+        // Matrix market is really similar to edge lists, however first the
         // header is skipped
         // Furthermore, any attributes are ignored (symmetric, etc.)
         // This should change in a future PIGO version
-        if (!r.at_str("%%MatrixMarket matrix coordinate"))
-            throw NotYetImplemented("Unable to handle different MatrixMarket formats");
+        if (!r.read("%%MatrixMarket matrix coordinate"))
+            throw NotYetImplemented("Unable to handle different MatrixMarket formats other than `matrix coordinate`");
+
+        r.skip_space_tab();
+        std::string field = r.read_word();
+        r.skip_space_tab();
+        std::string symmetry = r.read_word();
+
+        if ( (field == "real") || (field == "double") || (field == "integer") )
+            std::cout << "Reading MatrixMarket file with " << field << " weights and skipping weights" << std::endl;
+        if ( (field == "pattern") && detail::if_true_<wgt>() )
+            throw NotYetImplemented("Pattern only MatrixMarket file, but trying to read weights");
+        if ( field == "complex" )
+            throw NotYetImplemented("Unable to handle `complex` MatrixMarket files");
+
+        if ( symmetry == "symmetric" ) {
+            if (!detail::if_true_<sym>()) {
+                std::cerr << "WARNING: reading MatrixMarket file that is " + symmetry + " and requested non-symmetric read, symmetric edges will be skipped."  << std::endl;
+            }
+        } else if ( ( symmetry == "general") || (symmetry == "skew-symmetric") ) {
+            if (detail::if_true_<sym>()) {
+                std::cerr << "WARNING: reading MatrixMarket file that is " + symmetry + " anding symmetric edges while reading, which may cause duplicate edges."  << std::endl;
+            }
+        } else {
+            throw NotYetImplemented("MatrixMarket unsupported symmetry type" + symmetry);
+        }
 
         // Read out the first line
         r.move_to_next_int();
@@ -364,13 +389,13 @@ namespace pigo {
                 free();
                 throw Error("Header wants more non-zeros than found");
             }
-        } else if (detail::if_true_<sl>()) {
+        } else if (!detail::if_true_<sl>()) {
             if (nnz > m_) {
                 free();
                 throw Error("Header wants more non-zeros than read");
             }
         } else {
-            if (nnz != m_) {
+            if ((nnz != m_) && !detail::if_true_<sl>()) {
                 free();
                 throw Error("Header contradicts number of read non-zeros");
             }
@@ -652,6 +677,112 @@ namespace pigo {
                     write_ascii(my_fp, w);
                 }
                 pigo::write(my_fp, '\n');
+            }
+        }
+    }
+
+
+    template<class L, class O, class S, bool sym, bool ut, bool sl, bool wgt, class W, class WS>
+    void COO<L,O,S,sym,ut,sl,wgt,W,WS>::split_cvs_write(std::string fn, O edge_per_file, bool edgeIDs) {
+        int fcnt=0;
+
+        // Get the number of threads
+        omp_set_dynamic(0);
+        size_t num_threads = 0;
+        #pragma omp parallel shared(num_threads)
+        {
+            #pragma omp single
+            {
+                num_threads = omp_get_num_threads();
+            }
+        }
+
+        std::string header;
+        if (edgeIDs)
+            header =  "~id,~from,~to,~label\n";
+        else
+            header = "~from,~to,~label\n";
+
+            const std::string line_end {",con\n"};
+            int ell=line_end.length();
+
+        // account for
+        //   + e at the beginning of edge ID (if any) + comma
+        //   + v at the beginning v id and a comma between them
+        //   last comma included in line_end
+        ell += ((edgeIDs) ? 2 : 0) + 3;
+
+        for (O start=0; start<=m_; start += edge_per_file) {
+                O end = std::min(m_, start+edge_per_file);
+                std::string ofname = fn + "." + std::to_string(fcnt) + ".csv";
+                ++fcnt;
+
+            // Writing occurs in two passes
+            // First, each thread will simulate writing and compute how the
+            // space taken
+            // After the first pass, the output file is allocated
+            // Second, each thread actually writes
+            std::vector<size_t> pos_offsets(num_threads+1);
+            std::shared_ptr<File> f;
+            #pragma omp parallel shared(f) shared(pos_offsets)
+            {
+                size_t tid = omp_get_thread_num();
+                size_t my_size = 0;
+
+                #pragma omp for
+                for (O e = start; e < end; ++e) {
+                    my_size += ell;
+                    if (edgeIDs)
+                        my_size += write_size(e);
+                    auto x = detail::get_value_<S, L>(x_, e);
+                    my_size += write_size(x);
+
+                    auto y = detail::get_value_<S, L>(y_, e);
+                    my_size += write_size(y);
+                }
+
+                pos_offsets[tid+1] = my_size;
+                #pragma omp barrier
+
+                #pragma omp single
+                {
+                    // Compute the total size and perform a prefix sum
+                    pos_offsets[0] = 0;
+                    for (size_t thread = 1; thread <= num_threads; ++thread)
+                        pos_offsets[thread] = pos_offsets[thread-1] + pos_offsets[thread];
+
+                    // Allocate the file
+                    f = std::make_shared<File>(ofname, WRITE, header.length()+pos_offsets[num_threads]);
+
+                    // write header
+                    f->write(header);
+                }
+
+                #pragma omp barrier
+
+                FilePos my_fp = f->fp()+pos_offsets[tid];
+
+                // Perform the second pass, actually writing out to the file
+                #pragma omp for
+                for (O e = start; e < end; ++e) {
+                    if (edgeIDs) {
+                    pigo::write(my_fp, 'e');
+                    write_ascii(my_fp, e);
+
+                    pigo::write(my_fp, ',');
+                    }
+                    auto x = detail::get_value_<S, L>(x_, e);
+                    pigo::write(my_fp, 'v');
+                    write_ascii(my_fp, x);
+
+                    pigo::write(my_fp, ',');
+
+                    auto y = detail::get_value_<S, L>(y_, e);
+                    pigo::write(my_fp, 'v');
+                    write_ascii(my_fp, y);
+
+                    pigo::write(my_fp, line_end);
+                }
             }
         }
     }

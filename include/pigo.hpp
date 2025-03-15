@@ -67,6 +67,17 @@ namespace pigo {
             /** @brief Move the reader pass any comment lines */
             void skip_comments();
 
+            /** @brief Move the reader pass any space and tab */
+            void skip_space_tab();
+
+            /** @brief Read a word.
+            *
+            * Note: Reads until the next white space, but if at white space it does not pass that.
+            *
+            * @return the newly read word
+            */
+            std::string read_word();
+
             /** @brief Read an integer from the file
             *
             * Note: this reads integers in base 10 only
@@ -209,6 +220,13 @@ namespace pigo {
              * @return true if the string matches, false otherwise
              */
             bool at_str(std::string s);
+
+            /** @brief Check whether the reader is at the string
+             *
+             * @param s the string to check against, if exist reader passes the string
+             * @return true if the string matches, false otherwise
+             */
+             bool read(std::string s);
 
             /** @brief Return the current character of the reader
              *

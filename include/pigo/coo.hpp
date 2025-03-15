@@ -10,6 +10,7 @@
 
 #include <string>
 #include <memory>
+#include <limits>
 
 namespace pigo {
 
@@ -294,6 +295,7 @@ namespace pigo {
 
             /** @brief Write the COO out to an ASCII file */
             void write(std::string fn);
+            void split_cvs_write(std::string fn, Ordinal edge_per_file=std::numeric_limits<Ordinal>::max(), bool edgeIDs=false);
 
             /** @brief Utility to free consumed memory
              *
